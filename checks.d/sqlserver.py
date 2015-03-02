@@ -65,7 +65,7 @@ class SQLServer(AgentCheck):
         AgentCheck.__init__(self, name, init_config, agentConfig, instances)
 
         # Cache connections
-        self.connections = {}
+        self.connection = None
 
         self.instances_metrics = {}
         for instance in instances:
@@ -181,29 +181,26 @@ class SQLServer(AgentCheck):
             'db:%s' % database
         ]
 
-        if conn_key not in self.connections:
-            try:
-                conn_str = self._conn_string(instance)
-                conn = adodbapi.connect(conn_str)
-                self.connections[conn_key] = conn
-                self.service_check(self.SERVICE_CHECK_NAME, AgentCheck.OK, tags=service_check_tags)
-            except Exception:
-                cx = "%s - %s" % (host, database)
-                message = "Unable to connect to SQL Server for instance %s." % cx
-                self.service_check(self.SERVICE_CHECK_NAME, AgentCheck.CRITICAL, 
-                    tags=service_check_tags, message=message)
-                
-                password = instance.get('password')
-                tracebk = traceback.format_exc()
-                if password is not None:
-                    tracebk = tracebk.replace(password, "*" * 6)
-                    
-                raise Exception("%s \n %s" \
-                    % (message, tracebk))
+        try:
+            conn_str = self._conn_string(instance)
+            conn = adodbapi.connect(conn_str)
+            self.connection = conn
+            self.service_check(self.SERVICE_CHECK_NAME, AgentCheck.OK, tags=service_check_tags)
+        except Exception:
+            cx = "%s - %s" % (host, database)
+            message = "Unable to connect to SQL Server for instance %s." % cx
+            self.service_check(self.SERVICE_CHECK_NAME, AgentCheck.CRITICAL,
+                tags=service_check_tags, message=message)
 
-        conn = self.connections[conn_key]
-        cursor = conn.cursor()
-        return cursor
+            password = instance.get('password')
+            tracebk = traceback.format_exc()
+            if password is not None:
+                tracebk = tracebk.replace(password, "*" * 6)
+
+            raise Exception("%s \n %s" \
+                % (message, tracebk))
+
+        return self.connection.cursor()
 
     def get_sql_type(self, instance, counter_name):
         '''
@@ -239,7 +236,6 @@ class SQLServer(AgentCheck):
     def check(self, instance):
         ''' Fetch the metrics from the sys.dm_os_performance_counters table
         '''
-        cursor = self.get_cursor(instance)
         custom_tags = instance.get('tags', [])
         instance_key = self._conn_key(instance)
         metrics_to_collect = self.instances_metrics[instance_key]
@@ -249,6 +245,9 @@ class SQLServer(AgentCheck):
                 metric.fetch_metric(cursor, custom_tags)
             except Exception, e:
                 self.log.warning("Could not fetch metric %s: %s" % (metric.datadog_name, e))
+        # Clean connections
+        cursor.close()
+        self.connection.close()
 
 class SqlServerMetric(object):
     '''General class for common methods, should never be instantiated directly
