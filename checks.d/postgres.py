@@ -187,12 +187,17 @@ GROUP BY schemaname
         """
     }
 
+    REPLICATION_METRICS_9_1 = {
+        'CASE WHEN pg_last_xlog_receive_location() = pg_last_xlog_replay_location() THEN 0 ELSE GREATEST (0, EXTRACT (EPOCH FROM now() - pg_last_xact_replay_timestamp())) END': ('postgresql.replication_delay', GAUGE),
+    }
+
+    REPLICATION_METRICS_9_2 = {
+        'abs(pg_xlog_location_diff(pg_last_xlog_receive_location(), pg_last_xlog_replay_location())) AS replication_delay_bytes': ('postgres.replication_delay_bytes', GAUGE)
+    }
+
     REPLICATION_METRICS = {
         'descriptors': [],
-        'metrics': {
-            'CASE WHEN pg_last_xlog_receive_location() = pg_last_xlog_replay_location() THEN 0 ELSE GREATEST (0, EXTRACT (EPOCH FROM now() - pg_last_xact_replay_timestamp())) END': ('postgresql.replication_delay', GAUGE),
-            'abs(pg_xlog_location_diff(pg_last_xlog_receive_location(), pg_last_xlog_replay_location())) AS replication_delay_bytes': ('postgres.replication_delay_bytes', GAUGE)
-        },
+        'metrics': {},
         'relation': False,
         'query': """
 SELECT %s
@@ -221,6 +226,7 @@ SELECT %s
         self.bgw_metrics = {}
         self.db_instance_metrics = []
         self.db_bgw_metrics = []
+        self.replication_metrics = {}
 
     def _get_version(self, key, db):
         if key not in self.versions:
@@ -255,7 +261,7 @@ SELECT %s
         """
         # Extended 9.2+ metrics if needed
         metrics = self.instance_metrics.get(key)
-        
+
         if metrics is None:
 
             # Hack to make sure that if we have multiple instances that connect to
@@ -270,7 +276,7 @@ SELECT %s
 
             self.db_instance_metrics.append(sub_key)
 
-            
+
             if self._is_9_2_or_above(key, db):
                 self.instance_metrics[key] = dict(self.COMMON_METRICS, **self.NEWER_92_METRICS)
             else:
@@ -308,6 +314,23 @@ SELECT %s
             metrics = self.bgw_metrics.get(key)
         return metrics
 
+    def _get_replication_metrics(self, key, db):
+        """ Use either REPLICATION_METRICS_9_1 or REPLICATION_METRICS_9_1 + REPLICATION_METRICS_9_2
+        depending on the postgres version.
+        Uses a dictionnary to save the result for each instance
+        """
+        metrics = self.replication_metrics.get(key)
+        if metrics is None:
+            # Only available for >= 9.2 due to
+            # pg_xlog_location_diff
+            self.replication_metrics[key] = dict(self.REPLICATION_METRICS_9_1)
+            if self._is_9_2_or_above(key, db):
+                # Only available for >= 9.2 due to
+                # pg_xlog_location_diff
+                self.replication_metrics.update(self.REPLICATION_METRICS_9_2)
+            metrics = self.replication_metrics.get(key)
+        return metrics
+
     def _collect_stats(self, key, db, instance_tags, relations, custom_metrics):
         """Query pg_stat_* for various metrics
         If relations is not an empty list, gather per-relation metrics
@@ -333,9 +356,8 @@ SELECT %s
                 self.SIZE_METRICS
             ]
 
-        # Only available for >= 9.2 due to
-        # pg_xlog_location_diff
-        if self._is_9_2_or_above(key,db):
+        if self._is_9_1_or_above(key,db):
+            self.REPLICATION_METRICS['metrics'] = self._get_replication_metrics(key, db)
             metric_scope.append(self.REPLICATION_METRICS)
 
         full_metric_scope = list(metric_scope) + custom_metrics
