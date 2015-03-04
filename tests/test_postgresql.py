@@ -1,3 +1,4 @@
+import os
 import unittest
 from tests.common import load_check, AgentCheckTest
 
@@ -5,6 +6,16 @@ from nose.plugins.attrib import attr
 
 import time
 from pprint import pprint
+
+
+# postgres version: (expected metrics, expected tagged metrics per database)
+METRICS = {
+    '9.4.0': (40, 26),
+    '9.3.5': (40, 26),
+    '9.2.9': (40, 26),
+    '9.1.14': (35, 23),
+    '9.0.18': (34, 23),
+}
 
 @attr(requires='postgres')
 class TestPostgres(AgentCheckTest):
@@ -126,6 +137,12 @@ class TestPostgres(AgentCheckTest):
         metrics = self.check.get_metrics()
 
         self.assertEquals(len([m for m in metrics if 'table:persons' in str(m[3].get('tags', [])) ]), 11, metrics)
+
+        pg_version = os.getenv('PG_VERSION', '9.4.0')
+        exp_metrics = METRICS[pg_version][0]
+        exp_db_tagged_metrics = METRICS[pg_version][1]
+        self.assertEquals(len(metrics), exp_metrics, metrics)
+        self.assertEquals(len([m for m in metrics if 'db:datadog_test' in str(m[3].get('tags', []))]), exp_db_tagged_metrics, metrics)
 
         self.metrics = metrics
         self.assertMetric("custom.numbackends")
